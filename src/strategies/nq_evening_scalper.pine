@@ -1,0 +1,201 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// NQ / MNQ Evening Scalper  —  Multi-Signal Framework
+// Chart: NQ1! or MNQ1!  |  Timeframe: 5S (5-second bars)
+//
+// Signal stack (three independent filters must align):
+//   1. Bollinger Band touch   — price reaches the ±σ band (mean-reversion entry)
+//   2. Multi-TF EMA cross     — higher-timeframe trend bias confirms direction
+//   3. ATR volatility gate    — blocks dead zones (quiet market = no signal)
+//
+// Exits:
+//   • ATR-based stop loss  (sl_k × ATR from entry)
+//   • ATR-based take profit (tp_k × ATR from entry)
+//   • Stop-and-reverse     — new opposite signal closes and flips position
+//   • Session end          — flat before session_close
+//
+// Default parameters are a starting point for NQ 5S, evening session:
+//   bb_len=20  (100 sec lookback), bb_mult=1.0 (1σ bands)
+//   trend_tf="5" (5-minute EMA cross), fast=8, slow=21
+//   atr_len=14, atr_gate=0.7× median ATR
+//   sl=1.5× ATR, tp=2.0× ATR  → RR 1.33:1, needs ~43% WR to be EV-positive
+// ─────────────────────────────────────────────────────────────────────────────
+//@version=5
+strategy("NQ Evening Scalper — Multi-Signal",
+         shorttitle    = "NQ-EMS",
+         overlay       = true,
+         pyramiding    = 0,
+         calc_on_every_tick    = false,
+         process_exits_on_close = false,
+         default_qty_type      = strategy.fixed,
+         default_qty_value     = 1,
+         initial_capital       = 50000,
+         commission_type       = strategy.commission.cash_per_contract,
+         commission_value      = 0.62,
+         slippage              = 2)
+
+// ── INPUTS ─────────────────────────────────────────────────────────────────────
+
+var g_sess = "Session"
+sess_open  = input.string("1759", "Open  (HHMM, Exchange TZ)", group=g_sess,
+             tooltip="CME Globex evening open. Use exchange timezone (CT for CME).")
+sess_close = input.string("2059", "Close (HHMM, Exchange TZ)", group=g_sess)
+
+var g_bb = "Bollinger Bands  (Entry Trigger)"
+bb_len  = input.int  (20,  "Length (bars)",   minval=5, maxval=500, group=g_bb,
+          tooltip="At 5S resolution: 20 bars = 100 seconds of lookback.")
+bb_mult = input.float(1.0, "Std Dev Band (σ)", minval=0.3, maxval=3.0, step=0.1, group=g_bb,
+          tooltip="1.0 = price is 1σ from short-term mean. Lower = more signals.")
+
+var g_trend = "Trend Filter  (Higher-TF EMA Cross)"
+trend_tf   = input.timeframe("5",  "Timeframe",  group=g_trend,
+             tooltip="'5' = 5-minute bars when chart is on 5S. 5-min EMA cross sets direction bias.")
+trend_fast = input.int(8,  "Fast EMA period", minval=3, maxval=100, group=g_trend)
+trend_slow = input.int(21, "Slow EMA period", minval=5, maxval=200, group=g_trend)
+
+var g_vol = "Volatility Gate  (ATR)"
+atr_len  = input.int  (14,  "ATR Length (bars)", minval=3, group=g_vol)
+atr_gate = input.float(0.7, "Gate: ATR ≥ this × 50-bar median ATR", minval=0.1, step=0.05, group=g_vol,
+           tooltip="Blocks trading during quiet, choppy periods (dead zones). 0.7 = ATR must be at least 70% of its recent median.")
+
+var g_exit = "Exit Parameters"
+sl_k = input.float(1.5, "Stop Loss   (× ATR)", minval=0.3, step=0.1, group=g_exit)
+tp_k = input.float(2.0, "Take Profit (× ATR)", minval=0.5, step=0.1, group=g_exit)
+use_sar = input.bool(true, "Stop-and-Reverse on opposite signal", group=g_exit,
+          tooltip="When a short signal fires while long (and vice versa), close and flip instead of just ignoring.")
+
+// ── CORE CALCULATIONS ──────────────────────────────────────────────────────────
+
+// 1. Bollinger Bands (on the fast chart timeframe — 5S)
+bb_basis = ta.sma(close, bb_len)
+bb_dev   = bb_mult * ta.stdev(close, bb_len)
+bb_upper = bb_basis + bb_dev
+bb_lower = bb_basis - bb_dev
+
+// 2. Trend filter — EMA cross on higher timeframe
+[htf_fast_ema, htf_slow_ema] = request.security(
+     syminfo.tickerid, trend_tf,
+     [ta.ema(close, trend_fast), ta.ema(close, trend_slow)],
+     lookahead = barmerge.lookahead_off)
+
+bull_trend = htf_fast_ema > htf_slow_ema
+bear_trend = htf_fast_ema < htf_slow_ema
+
+// 3. ATR gate — trade only when volatility is above threshold
+atr        = ta.atr(atr_len)
+atr_median = ta.sma(atr, 50)
+vol_ok     = atr >= atr_median * atr_gate
+
+// 4. Session window
+in_session = not na(time("1", sess_open + "-" + sess_close + ":23456"))
+
+// ── SIGNALS ────────────────────────────────────────────────────────────────────
+// Both entry conditions must fire on the same bar — this prevents weak signals
+//   Long  : bar's low  touched or broke below lower BB  AND trend is bullish
+//   Short : bar's high touched or broke above upper BB  AND trend is bearish
+
+long_sig  = low  <= bb_lower and bull_trend and vol_ok and in_session
+short_sig = high >= bb_upper and bear_trend and vol_ok and in_session
+
+// Convenience position-state flags
+is_flat  = strategy.position_size == 0
+is_long  = strategy.position_size > 0
+is_short = strategy.position_size < 0
+
+// ── ENTRIES & STOP-AND-REVERSE ─────────────────────────────────────────────────
+// Entry prices: market order on next bar open (default PineScript strategy behavior)
+// Exits are placed as bracket orders immediately after entry
+
+if long_sig
+    if is_short and use_sar
+        strategy.close("Short", comment="SAR→L")
+    strategy.entry("Long", strategy.long, comment="▲")
+
+if short_sig
+    if is_long and use_sar
+        strategy.close("Long", comment="SAR→S")
+    strategy.entry("Short", strategy.short, comment="▼")
+
+// ── BRACKET EXITS ──────────────────────────────────────────────────────────────
+// Using ATR at entry bar. Because strategy.exit re-evaluates every bar, we
+// anchor stop/limit to the average entry price which is fixed.
+// Note: atr here is the current bar's ATR, which gives us a "live" bracket.
+//       For a fixed bracket (set-and-forget), store atr at entry with var.
+
+var float entry_atr = na
+
+if is_long[1] == false and is_long  // just entered long
+    entry_atr := atr
+if is_short[1] == false and is_short  // just entered short
+    entry_atr := atr
+
+if is_long
+    strategy.exit("Long Exit", "Long",
+         stop    = strategy.position_avg_price - sl_k * entry_atr,
+         limit   = strategy.position_avg_price + tp_k * entry_atr,
+         comment_loss   = "SL",
+         comment_profit = "TP")
+
+if is_short
+    strategy.exit("Short Exit", "Short",
+         stop    = strategy.position_avg_price + sl_k * entry_atr,
+         limit   = strategy.position_avg_price - tp_k * entry_atr,
+         comment_loss   = "SL",
+         comment_profit = "TP")
+
+// ── SESSION END FLAT ────────────────────────────────────────────────────────────
+if not in_session and not is_flat
+    strategy.close_all(comment="EOD")
+
+// ── VISUAL LAYERS ──────────────────────────────────────────────────────────────
+
+// Bollinger Bands
+p_basis = plot(bb_basis, "BB Mid",   color=color.new(color.gray, 60), linewidth=1)
+p_upper = plot(bb_upper, "BB Upper", color=color.new(color.red,  40), linewidth=1)
+p_lower = plot(bb_lower, "BB Lower", color=color.new(color.lime, 40), linewidth=1)
+fill(p_upper, p_lower, color=color.new(color.gray, 92), title="BB Fill")
+
+// Higher-TF trend EMAs
+plot(htf_fast_ema, "Trend Fast EMA", color=color.new(color.orange, 0), linewidth=2)
+plot(htf_slow_ema, "Trend Slow EMA", color=color.new(color.aqua,   0), linewidth=2)
+
+// Session background
+bgcolor(in_session ? color.new(color.blue, 94) : na, title="Session Window")
+
+// Volatility gate overlay — dim when blocked
+bgcolor(not vol_ok and in_session ? color.new(color.gray, 88) : na, title="ATR Gate Blocked")
+
+// Entry arrows (only when entering from flat to avoid SAR clutter)
+plotshape(long_sig  and is_flat, "Long  Signal", shape.triangleup,
+          location.belowbar, color=color.new(color.green, 0), size=size.small)
+plotshape(short_sig and is_flat, "Short Signal", shape.triangledown,
+          location.abovebar, color=color.new(color.red,   0), size=size.small)
+
+// ── INFO TABLE ─────────────────────────────────────────────────────────────────
+var table info = table.new(position.top_right, 2, 6,
+     bgcolor=color.new(color.black, 70), border_width=1)
+
+if barstate.islast
+    trend_txt   = bull_trend ? "▲ BULL" : bear_trend ? "▼ BEAR" : "— FLAT"
+    trend_col   = bull_trend ? color.lime : bear_trend ? color.red : color.gray
+    vol_txt     = vol_ok     ? "✓ ON"  : "✗ BLOCKED"
+    vol_col     = vol_ok     ? color.lime : color.orange
+    sess_txt    = in_session ? "✓ ACTIVE" : "— CLOSED"
+    sess_col    = in_session ? color.lime : color.gray
+    pos_txt     = is_long    ? "LONG  ▲" : is_short ? "SHORT ▼" : "FLAT"
+    pos_col     = is_long    ? color.lime : is_short ? color.red : color.gray
+
+    rr_txt = str.format("{0,number,#.##} : 1", tp_k / sl_k)
+
+    table.cell(info, 0, 0, "Trend",    text_color=color.silver, text_size=size.small)
+    table.cell(info, 1, 0, trend_txt,  text_color=trend_col,    text_size=size.small, text_halign=text.align_left)
+    table.cell(info, 0, 1, "Vol Gate", text_color=color.silver, text_size=size.small)
+    table.cell(info, 1, 1, vol_txt,    text_color=vol_col,      text_size=size.small, text_halign=text.align_left)
+    table.cell(info, 0, 2, "Session",  text_color=color.silver, text_size=size.small)
+    table.cell(info, 1, 2, sess_txt,   text_color=sess_col,     text_size=size.small, text_halign=text.align_left)
+    table.cell(info, 0, 3, "Position", text_color=color.silver, text_size=size.small)
+    table.cell(info, 1, 3, pos_txt,    text_color=pos_col,      text_size=size.small, text_halign=text.align_left)
+    table.cell(info, 0, 4, "R:R",      text_color=color.silver, text_size=size.small)
+    table.cell(info, 1, 4, rr_txt,     text_color=color.white,  text_size=size.small, text_halign=text.align_left)
+    table.cell(info, 0, 5, "BB σ",     text_color=color.silver, text_size=size.small)
+    table.cell(info, 1, 5, str.format("{0,number,#.#}σ / {1} bars", bb_mult, bb_len),
+               text_color=color.white, text_size=size.small, text_halign=text.align_left)
