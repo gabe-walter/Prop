@@ -19,13 +19,12 @@
 //   atr_len=14, atr_gate=0.7× median ATR
 //   sl=1.5× ATR, tp=2.0× ATR  → RR 1.33:1, needs ~43% WR to be EV-positive
 // ─────────────────────────────────────────────────────────────────────────────
-//@version=5
+//@version=6
 strategy("NQ Evening Scalper — Multi-Signal",
          shorttitle    = "NQ-EMS",
          overlay       = true,
          pyramiding    = 0,
          calc_on_every_tick    = false,
-         process_exits_on_close = false,
          default_qty_type      = strategy.fixed,
          default_qty_value     = 1,
          initial_capital       = 50000,
