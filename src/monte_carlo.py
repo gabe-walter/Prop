@@ -38,9 +38,10 @@ class SimStrategy:
     Pass vol_target instead of risk_per_trade to use equal-variance sizing.
     """
     label: str
-    risk_reward: float       # TP size / SL size (e.g., 0.5 = TP is half the SL)
-    risk_per_trade: float = 0.0   # Dollar amount risked (SL hit). Set by vol_target if 0.
-    vol_target: float = 0.0       # Target per-trade std. Overrides risk_per_trade if > 0.
+    risk_reward: float           # TP size / SL size (e.g., 0.5 = TP is half the SL)
+    risk_per_trade: float = 0.0  # Dollar amount risked (SL hit). Set by vol_target if 0.
+    vol_target: float = 0.0      # Target per-trade std. Overrides risk_per_trade if > 0.
+    win_rate_override: float = 0.0  # If > 0, use this win rate instead of zero-EV rate.
     trades_per_day: int = 2
 
     def __post_init__(self):
@@ -52,6 +53,17 @@ class SimStrategy:
 
     @property
     def win_rate(self) -> float:
+        """
+        Actual win rate used in simulation.
+        Override with win_rate_override to model positive/negative EV strategies.
+        Default: zero expected value rate = 1/(1+rr).
+        """
+        if self.win_rate_override > 0:
+            return min(self.win_rate_override, 0.9999)
+        return 1.0 / (1.0 + self.risk_reward)
+
+    @property
+    def zero_ev_win_rate(self) -> float:
         """Win rate that gives exactly zero expected value."""
         return 1.0 / (1.0 + self.risk_reward)
 
