@@ -4,3 +4,4 @@ yfinance>=0.2.40
 matplotlib>=3.8
 scipy>=1.11
 pytz>=2024.1
+databento>=0.34
