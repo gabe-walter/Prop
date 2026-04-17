@@ -5,3 +5,10 @@ matplotlib>=3.8
 scipy>=1.11
 pytz>=2024.1
 databento>=0.34
+
+# Live trading (TopstepX / ProjectX)
+signalrcore>=0.9.5          # WebSocket SignalR client for GatewayTrade tick stream
+requests>=2.31              # REST API calls (order placement, auth, account info)
+python-dotenv>=1.0          # optional: load credentials from .env file
+# tsxapipy — install from GitHub:
+#   pip install git+https://github.com/mceesincus/tsxapi4py.git
