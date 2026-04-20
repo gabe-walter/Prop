@@ -62,7 +62,7 @@ class LiveConfig:
     one_per_day: bool = True
 
     # Exit
-    reward_risk: float = 2.0
+    reward_risk: float = 1.0
     move_to_be:  bool  = True
 
     # Sizing

@@ -41,20 +41,22 @@ def fetch_15m_bars(
     end: str,
     symbol: str = "MNQ.c.0",
     dataset: str = "GLBX.MDP3",
+    bar_minutes: int = 5,
 ) -> pd.DataFrame:
     """
-    Fetch 15-minute OHLCV bars via Databento by resampling 1-minute source data.
+    Fetch OHLCV bars via Databento by resampling 1-minute source data.
 
     Args:
-        start:   Start date "YYYY-MM-DD" (inclusive)
-        end:     End date "YYYY-MM-DD" (exclusive for the API, so pass day+1 if needed)
-        symbol:  Databento continuous-contract symbol or short alias (e.g. "MNQ")
-        dataset: Databento dataset (default: GLBX.MDP3 for CME Globex)
+        start:       Start date "YYYY-MM-DD" (inclusive)
+        end:         End date "YYYY-MM-DD" (exclusive for the API)
+        symbol:      Databento continuous-contract symbol or short alias (e.g. "MNQ")
+        dataset:     Databento dataset (default: GLBX.MDP3 for CME Globex)
+        bar_minutes: Target bar size in minutes (default: 5 for 5-min EMA bars)
 
     Returns:
         DataFrame with tz-aware DatetimeIndex (US/Eastern),
         columns: Open, High, Low, Close, Volume.
-        Rows are 15-min bars between 06:00 and 15:00 ET.
+        Rows cover 06:00–15:00 ET (EMA warmup window + trade hours).
     """
     api_key = os.environ.get("DATABENTO_API_KEY")
     if not api_key:
@@ -115,9 +117,10 @@ def fetch_15m_bars(
                              f"Available: {df.columns.tolist()}")
     df = df[["Open", "High", "Low", "Close", "Volume"]].copy()
 
-    # ── Resample 1m → 15m (left-labelled, left-closed) ───────────────────────
-    df_15m = (
-        df.resample("15min", label="left", closed="left")
+    # ── Resample 1m → N-min (left-labelled, left-closed) ────────────────────
+    rule = f"{bar_minutes}min"
+    df_out = (
+        df.resample(rule, label="left", closed="left")
         .agg(Open=("Open", "first"),
              High=("High",  "max"),
              Low= ("Low",   "min"),
@@ -127,13 +130,13 @@ def fetch_15m_bars(
     )
 
     # Drop zero-volume bars (extended-hours gaps, roll gaps, holidays)
-    df_15m = df_15m[df_15m["Volume"] > 0]
+    df_out = df_out[df_out["Volume"] > 0]
 
     # Keep only the session window we care about (EMA warmup + trade hours)
-    df_15m = df_15m.between_time(_SESSION_START, _SESSION_END)
+    df_out = df_out.between_time(_SESSION_START, _SESSION_END)
 
-    print(f"[databento] {len(df_15m):,} 15-min bars after resample + session filter")
-    return df_15m
+    print(f"[databento] {len(df_out):,} {bar_minutes}-min bars after resample + session filter")
+    return df_out
 
 
 def fetch_and_cache(
@@ -141,14 +144,15 @@ def fetch_and_cache(
     start: str = None,
     end: str = None,
     cache_path: str = None,
+    bar_minutes: int = 5,
     force_refresh: bool = False,
 ) -> pd.DataFrame:
     """
-    Fetch 15-min bars with local parquet caching to avoid repeated API calls.
+    Fetch bars with local parquet caching to avoid repeated API calls.
 
     Default window: the 365 calendar days ending today.
-    Subsequent calls with the same arguments load from cache unless
-    force_refresh=True is passed.
+    bar_minutes=5  → 5-min bars (for EMA computation)
+    bar_minutes=15 → 15-min bars (legacy)
     """
     today     = datetime.now()
     if end is None:
@@ -159,8 +163,8 @@ def fetch_and_cache(
     resolved = SYMBOL_MAP.get(symbol.upper(), symbol)
 
     if cache_path is None:
-        safe_sym  = resolved.replace(".", "_").lower()
-        cache_path = f"{safe_sym}_15m_{start}_{end}.parquet"
+        safe_sym   = resolved.replace(".", "_").lower()
+        cache_path = f"{safe_sym}_{bar_minutes}m_{start}_{end}.parquet"
 
     if os.path.exists(cache_path) and not force_refresh:
         print(f"[databento] Loading cached data from {cache_path}")
@@ -169,7 +173,7 @@ def fetch_and_cache(
             df.index = df.index.tz_localize(EASTERN)
         return df
 
-    df = fetch_15m_bars(start=start, end=end, symbol=resolved)
+    df = fetch_15m_bars(start=start, end=end, symbol=resolved, bar_minutes=bar_minutes)
     df.to_parquet(cache_path)
     print(f"[databento] Cached {len(df):,} rows → {cache_path}")
     return df

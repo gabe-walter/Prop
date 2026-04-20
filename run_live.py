@@ -55,7 +55,7 @@ Usage
   python run_live.py --confirm-live
 
   # Override any parameter
-  python run_live.py --contract CON.F.US.MNQ.U25 --risk-pct 0.5 --rr 2.0 --paper
+  python run_live.py --contract CON.F.US.MNQ.U25 --risk-pct 0.5 --rr 1.0 --paper
 """
 
 import argparse
@@ -102,7 +102,7 @@ parser.add_argument("--api-key",       default=os.getenv("TOPSTEPX_API_KEY"))
 parser.add_argument("--account-id",    type=int, default=int(os.getenv("TOPSTEPX_ACCOUNT_ID") or 0))
 parser.add_argument("--contract",      default=os.getenv("TOPSTEPX_CONTRACT", "CON.F.US.MNQ.U25"))
 parser.add_argument("--risk-pct",      type=float, default=1.0)
-parser.add_argument("--rr",            type=float, default=2.0)
+parser.add_argument("--rr",            type=float, default=1.0)
 parser.add_argument("--point-val",     type=float, default=2.0,
                     help="$ per index point: MNQ=2, NQ=20, ES=50, MES=5")
 parser.add_argument("--fast-ema",      type=int,   default=9)
@@ -284,13 +284,13 @@ _bar_tracker: dict = {
 
 def _bar_close_monitor():
     """
-    Background thread: detects 15-min bar boundaries in ET and calls
-    engine.update_ema() on each close. Feeds the same EMA cadence as
-    the Pine Script (on bar close, not on every tick).
+    Background thread: detects 5-min bar boundaries in ET and calls
+    engine.update_ema() on each close. EMA is updated on 5-min bar closes
+    to match the strategy's EMA timeframe (finer than the 15-min OR window).
     """
     while not _shutdown.is_set():
         now_et = datetime.now(EASTERN)
-        minute = (now_et.minute // 15) * 15
+        minute = (now_et.minute // 5) * 5
         bar_start = now_et.replace(minute=minute, second=0, microsecond=0)
 
         prev = _bar_tracker["bar_start"]

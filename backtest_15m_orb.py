@@ -69,10 +69,12 @@ parser.add_argument("--start",        default=None)
 parser.add_argument("--end",          default=None)
 parser.add_argument("--capital",      type=float, default=50_000.0)
 parser.add_argument("--risk-pct",     type=float, default=1.0)
-parser.add_argument("--rr",           type=float, default=2.0)
+parser.add_argument("--rr",           type=float, default=1.0)
 parser.add_argument("--point-val",    type=float, default=2.0)
 parser.add_argument("--fast-ema",     type=int,   default=9)
 parser.add_argument("--slow-ema",     type=int,   default=20)
+parser.add_argument("--bar-mins",     type=int,   default=5,
+                    help="Bar size for EMA computation in minutes (default: 5)")
 parser.add_argument("--no-be",        action="store_true")
 parser.add_argument("--max-qty",      type=int,   default=50)
 parser.add_argument("--mc-sims",      type=int,   default=5_000)
@@ -84,12 +86,12 @@ end_date   = args.end   or today.strftime("%Y-%m-%d")
 start_date = args.start or (today - timedelta(days=365)).strftime("%Y-%m-%d")
 
 print("=" * 62)
-print("  15-Min ORB + EMA  —  Databento Backtest")
+print("  ORB + EMA  —  Databento Backtest")
 print(f"  Symbol   : {args.symbol}")
 print(f"  Period   : {start_date}  →  {end_date}")
 print(f"  Capital  : ${args.capital:>10,.0f}")
 print(f"  Risk/trade: {args.risk_pct}%   R:R {args.rr}:1")
-print(f"  EMA      : {args.fast_ema}/{args.slow_ema}   BE: {'off' if args.no_be else 'on'}")
+print(f"  EMA      : {args.fast_ema}/{args.slow_ema} on {args.bar_mins}-min bars   BE: {'off' if args.no_be else 'on'}")
 print(f"  $/point  : {args.point_val}   max contracts: {args.max_qty}")
 print("=" * 62)
 
@@ -98,10 +100,11 @@ df = fetch_and_cache(
     symbol=args.symbol,
     start=start_date,
     end=end_date,
+    bar_minutes=args.bar_mins,
     force_refresh=args.force_refresh,
 )
 n_days = df.index.normalize().nunique()
-print(f"\n  {len(df):,} 15-min bars  |  {n_days} trading days\n")
+print(f"\n  {len(df):,} {args.bar_mins}-min bars  |  {n_days} trading days\n")
 
 # ── Run strategy ──────────────────────────────────────────────────────────────
 config = ORBEMAConfig(

@@ -47,7 +47,7 @@ class ORBEMAConfig:
     one_per_day: bool = True     # only one trade per calendar day
 
     # Exit
-    reward_risk: float = 2.0     # TP = entry ± reward_risk × halfOR
+    reward_risk: float = 1.0     # TP = entry ± reward_risk × halfOR
     move_to_be:  bool  = True    # move stop to BE after 1R in-the-money
 
     # Sizing
