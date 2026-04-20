@@ -134,7 +134,9 @@ class StrategyEngine:
 
         # Position
         self._pos: Optional[PositionInfo] = None
-        self._traded_today = False
+        self._traded_today     = False
+        self._long_breach_seen  = False
+        self._short_breach_seen = False
         self._equity = config.initial_equity
 
         # Day tracking (to detect new day and auto-reset)
@@ -270,9 +272,9 @@ class StrategyEngine:
         # State.EOD_CLOSE is terminal until reset_for_new_day()
 
     def _check_entry(self, price: float, t: dtime):
-        # _traded_today doubles as "breakout_seen" — set True on the FIRST tick
-        # that crosses OR high or OR low, regardless of whether we enter.
-        # This prevents a later EMA flip from triggering a stale/late entry.
+        # Each direction is evaluated once — independently — on its first breach.
+        # A rejected long (EMA not bullish) leaves the short side still open,
+        # and vice-versa. _traded_today=True only after an actual order is fired.
         if self._traded_today:
             return
         if self._ema_f is None or self._ema_s is None:
@@ -286,64 +288,65 @@ class StrategyEngine:
         bullish = self._ema_f > self._ema_s
         bearish = self._ema_f < self._ema_s
 
-        breached_long  = price >= or_h
-        breached_short = price <= or_l
+        # ── Long side ─────────────────────────────────────────────────────────
+        if not self._long_breach_seen and price >= or_h:
+            self._long_breach_seen = True
+            if bullish:
+                qty    = self._calc_qty(half_or)
+                target = or_h + self.cfg.reward_risk * half_or
+                self._pos = PositionInfo(
+                    direction="long",
+                    entry_price=or_h,
+                    or_high=or_h, or_low=or_l, or_mid=or_mid, half_or=half_or,
+                    target=target, stop=or_mid,
+                    be_trigger=or_h + half_or,
+                    qty=qty,
+                )
+                self._state       = State.IN_POSITION
+                self._traded_today = True
+                log.info(
+                    f"[Engine] LONG signal  price={price:.2f}  entry≈{or_h:.2f}  "
+                    f"stop={or_mid:.2f}  target={target:.2f}  qty={qty}  "
+                    f"EMA {self._ema_f:.2f}/{self._ema_s:.2f}"
+                )
+                if self.on_enter_long:
+                    self.on_enter_long(qty, or_mid, target)
+                return
+            else:
+                log.info(
+                    f"[Engine] OR High breached at {price:.2f} but EMA not bullish "
+                    f"(fast={self._ema_f:.2f} slow={self._ema_s:.2f}) — long skipped, short still open"
+                )
 
-        if not breached_long and not breached_short:
-            return
-
-        # First breach: consume the day's entry opportunity immediately.
-        # Even if we skip due to EMA misalignment, no further entry is allowed.
-        self._traded_today = True
-
-        if breached_long and bullish:
-            qty    = self._calc_qty(half_or)
-            target = or_h + self.cfg.reward_risk * half_or
-            self._pos = PositionInfo(
-                direction="long",
-                entry_price=or_h,
-                or_high=or_h, or_low=or_l, or_mid=or_mid, half_or=half_or,
-                target=target, stop=or_mid,
-                be_trigger=or_h + half_or,
-                qty=qty,
-            )
-            self._state = State.IN_POSITION
-            log.info(
-                f"[Engine] LONG signal  price={price:.2f}  entry≈{or_h:.2f}  "
-                f"stop={or_mid:.2f}  target={target:.2f}  qty={qty}  "
-                f"EMA {self._ema_f:.2f}/{self._ema_s:.2f}"
-            )
-            if self.on_enter_long:
-                self.on_enter_long(qty, or_mid, target)
-
-        elif breached_short and bearish:
-            qty    = self._calc_qty(half_or)
-            target = or_l - self.cfg.reward_risk * half_or
-            self._pos = PositionInfo(
-                direction="short",
-                entry_price=or_l,
-                or_high=or_h, or_low=or_l, or_mid=or_mid, half_or=half_or,
-                target=target, stop=or_mid,
-                be_trigger=or_l - half_or,
-                qty=qty,
-            )
-            self._state = State.IN_POSITION
-            log.info(
-                f"[Engine] SHORT signal  price={price:.2f}  entry≈{or_l:.2f}  "
-                f"stop={or_mid:.2f}  target={target:.2f}  qty={qty}  "
-                f"EMA {self._ema_f:.2f}/{self._ema_s:.2f}"
-            )
-            if self.on_enter_short:
-                self.on_enter_short(qty, or_mid, target)
-
-        else:
-            # OR was breached but EMA not aligned — skip this day entirely.
-            # _traded_today=True (set above) ensures no retry on later ticks.
-            side = "high" if breached_long else "low"
-            log.info(
-                f"[Engine] OR {side} breached at {price:.2f} but EMA not aligned "
-                f"(fast={self._ema_f:.2f} slow={self._ema_s:.2f}) — skipping day"
-            )
+        # ── Short side ────────────────────────────────────────────────────────
+        if not self._short_breach_seen and price <= or_l:
+            self._short_breach_seen = True
+            if bearish:
+                qty    = self._calc_qty(half_or)
+                target = or_l - self.cfg.reward_risk * half_or
+                self._pos = PositionInfo(
+                    direction="short",
+                    entry_price=or_l,
+                    or_high=or_h, or_low=or_l, or_mid=or_mid, half_or=half_or,
+                    target=target, stop=or_mid,
+                    be_trigger=or_l - half_or,
+                    qty=qty,
+                )
+                self._state       = State.IN_POSITION
+                self._traded_today = True
+                log.info(
+                    f"[Engine] SHORT signal  price={price:.2f}  entry≈{or_l:.2f}  "
+                    f"stop={or_mid:.2f}  target={target:.2f}  qty={qty}  "
+                    f"EMA {self._ema_f:.2f}/{self._ema_s:.2f}"
+                )
+                if self.on_enter_short:
+                    self.on_enter_short(qty, or_mid, target)
+                return
+            else:
+                log.info(
+                    f"[Engine] OR Low breached at {price:.2f} but EMA not bearish "
+                    f"(fast={self._ema_f:.2f} slow={self._ema_s:.2f}) — short skipped, long still open"
+                )
 
     def _manage(self, price: float):
         """
@@ -391,11 +394,13 @@ class StrategyEngine:
         return max(1, min(qty, self.cfg.max_contracts))
 
     def _do_reset(self):
-        self._state        = State.IDLE
-        self._or_h         = None
-        self._or_l         = None
-        self._pos          = None
-        self._traded_today = False
+        self._state             = State.IDLE
+        self._or_h              = None
+        self._or_l              = None
+        self._pos               = None
+        self._traded_today      = False
+        self._long_breach_seen  = False
+        self._short_breach_seen = False
         log.info("[Engine] Reset for new trading day")
 
     # ── Diagnostic ────────────────────────────────────────────────────────────

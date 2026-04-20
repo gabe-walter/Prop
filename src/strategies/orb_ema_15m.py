@@ -167,10 +167,14 @@ def generate_trades(
         entry_qty     = 0
         current_sl    = None
         be_triggered  = False
-        # breakout_seen: True once price FIRST crosses OR high or OR low.
-        # EMA is evaluated exactly once at that crossing — if it doesn't align
-        # the day is skipped entirely; a later EMA flip cannot trigger entry.
-        breakout_seen = False
+        trade_taken   = False    # True once a trade is actually placed (one_per_day)
+        # Per-direction breach flags: once OR high (or low) is first crossed,
+        # that side is permanently locked regardless of future EMA behaviour.
+        # The OTHER side remains open until IT is also breached or a trade fills.
+        # This prevents late entries from EMA flips while still allowing a
+        # reversal (e.g. short breach skipped → long breach entered later).
+        long_breach_seen  = False
+        short_breach_seen = False
         eq_before     = equity
 
         for ts, bar in trade_bars.iterrows():
@@ -182,46 +186,50 @@ def generate_trades(
             bearish = ema_f < ema_s
 
             # ── ENTRY ─────────────────────────────────────────────────────────
-            if position is None and not breakout_seen:
-                # Check for first breach of OR levels (order: long side first)
-                breached_long  = high >= long_entry
-                breached_short = low  <= short_entry
+            if position is None and not trade_taken:
+                direction = None
 
-                if breached_long or breached_short:
-                    # Lock out any future entry attempt this day
-                    breakout_seen = True
-
-                    if breached_long and bullish:
+                # Long side: check only if OR high not yet breached
+                if not long_breach_seen and high >= long_entry:
+                    long_breach_seen = True        # this side is now locked
+                    if bullish:
                         direction = "long"
-                    elif breached_short and bearish:
+
+                # Short side: check only if OR low not yet breached.
+                # Use separate `if` (not `elif`) so a same-bar double-breach
+                # still gives the short a chance when the long EMA check fails.
+                if direction is None and not short_breach_seen and low <= short_entry:
+                    short_breach_seen = True       # this side is now locked
+                    if bearish:
                         direction = "short"
-                    else:
-                        # OR was breached but EMA not aligned — skip day
-                        continue
 
-                    # Position sizing
-                    risk_per_contract = half_or * config.point_value
-                    if config.size_mode == "% Risk" and risk_per_contract > 0:
-                        dollar_risk = equity * (config.risk_pct / 100.0)
-                        qty = min(
-                            max(int(dollar_risk / risk_per_contract), 1),
-                            config.max_contracts,
-                        )
-                    else:
-                        qty = config.fixed_qty
+                if direction is None:
+                    continue   # neither side breached or neither EMA aligned
 
-                    if direction == "long":
-                        position    = "long"
-                        entry_price = long_entry
-                        current_sl  = long_sl
-                    else:
-                        position    = "short"
-                        entry_price = short_entry
-                        current_sl  = short_sl
+                # Position sizing
+                risk_per_contract = half_or * config.point_value
+                if config.size_mode == "% Risk" and risk_per_contract > 0:
+                    dollar_risk = equity * (config.risk_pct / 100.0)
+                    qty = min(
+                        max(int(dollar_risk / risk_per_contract), 1),
+                        config.max_contracts,
+                    )
+                else:
+                    qty = config.fixed_qty
 
-                    be_triggered = False
-                    entry_qty    = qty
-                    eq_before    = equity
+                if direction == "long":
+                    position    = "long"
+                    entry_price = long_entry
+                    current_sl  = long_sl
+                else:
+                    position    = "short"
+                    entry_price = short_entry
+                    current_sl  = short_sl
+
+                be_triggered = False
+                trade_taken  = True
+                entry_qty    = qty
+                eq_before    = equity
 
                 # Check same-bar exit (entry and exit in the same 15-min bar)
                 if position == "long":
