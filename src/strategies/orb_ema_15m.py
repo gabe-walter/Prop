@@ -162,13 +162,16 @@ def generate_trades(
         eod_bars = day_df[eod_mask]
 
         # ── Intraday simulation ───────────────────────────────────────────────
-        position     = None     # None | "long" | "short"
-        entry_price  = None
-        entry_qty    = 0
-        current_sl   = None
-        be_triggered = False
-        trade_taken  = False
-        eq_before    = equity
+        position      = None     # None | "long" | "short"
+        entry_price   = None
+        entry_qty     = 0
+        current_sl    = None
+        be_triggered  = False
+        # breakout_seen: True once price FIRST crosses OR high or OR low.
+        # EMA is evaluated exactly once at that crossing — if it doesn't align
+        # the day is skipped entirely; a later EMA flip cannot trigger entry.
+        breakout_seen = False
+        eq_before     = equity
 
         for ts, bar in trade_bars.iterrows():
             high  = float(bar["High"])
@@ -179,43 +182,46 @@ def generate_trades(
             bearish = ema_f < ema_s
 
             # ── ENTRY ─────────────────────────────────────────────────────────
-            if position is None and not (config.one_per_day and trade_taken):
+            if position is None and not breakout_seen:
+                # Check for first breach of OR levels (order: long side first)
+                breached_long  = high >= long_entry
+                breached_short = low  <= short_entry
 
-                # Position sizing (uses current equity so it compounds)
-                risk_per_contract = half_or * config.point_value
-                if config.size_mode == "% Risk" and risk_per_contract > 0:
-                    dollar_risk = equity * (config.risk_pct / 100.0)
-                    qty = min(
-                        max(int(dollar_risk / risk_per_contract), 1),
-                        config.max_contracts,
-                    )
-                else:
-                    qty = config.fixed_qty
+                if breached_long or breached_short:
+                    # Lock out any future entry attempt this day
+                    breakout_seen = True
 
-                filled = False
+                    if breached_long and bullish:
+                        direction = "long"
+                    elif breached_short and bearish:
+                        direction = "short"
+                    else:
+                        # OR was breached but EMA not aligned — skip day
+                        continue
 
-                if bullish and high >= long_entry:
-                    position     = "long"
-                    entry_price  = long_entry
-                    current_sl   = long_sl
+                    # Position sizing
+                    risk_per_contract = half_or * config.point_value
+                    if config.size_mode == "% Risk" and risk_per_contract > 0:
+                        dollar_risk = equity * (config.risk_pct / 100.0)
+                        qty = min(
+                            max(int(dollar_risk / risk_per_contract), 1),
+                            config.max_contracts,
+                        )
+                    else:
+                        qty = config.fixed_qty
+
+                    if direction == "long":
+                        position    = "long"
+                        entry_price = long_entry
+                        current_sl  = long_sl
+                    else:
+                        position    = "short"
+                        entry_price = short_entry
+                        current_sl  = short_sl
+
                     be_triggered = False
-                    trade_taken  = True
                     entry_qty    = qty
                     eq_before    = equity
-                    filled       = True
-
-                elif bearish and low <= short_entry:
-                    position     = "short"
-                    entry_price  = short_entry
-                    current_sl   = short_sl
-                    be_triggered = False
-                    trade_taken  = True
-                    entry_qty    = qty
-                    eq_before    = equity
-                    filled       = True
-
-                if not filled:
-                    continue
 
                 # Check same-bar exit (entry and exit in the same 15-min bar)
                 if position == "long":
